@@ -1,0 +1,242 @@
+# Sign, notarize and publish macOS builds of qbz.
+#
+# Consumes the dmgs vicrodh/qbz already publishes (they ship ad-hoc signed, which
+# Gatekeeper rejects and MDM-managed Macs often block outright), replaces the
+# signature with our Developer ID, notarizes and staples.
+#
+# Trust boundary: the `signing` environment is protected and requires manual
+# approval per run, so a human okays the exact upstream tag before our
+# certificate vouches for its bytes. Secrets exist only in the `sign` job; the
+# publish and tap jobs never see the certificate.
+
+name: resign-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to sign (e.g. v2.0.0)"
+        required: true
+        type: string
+      promote_tap:
+        description: "Update the Homebrew cask after publishing"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# Never cancel a release mid-flight: a half-published tag is worse than a slow one.
+concurrency:
+  group: resign-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: vicrodh/qbz
+
+jobs:
+  # Freezes exactly what will be signed. Refuses to start unless BOTH
+  # architectures are present upstream: the upstream macOS matrix is
+  # continue-on-error, so a release can legitimately exist with one dmg missing.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.resolve.outputs.commit }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      digests: ${{ steps.resolve.outputs.digests }}
+    steps:
+      - name: Resolve and freeze upstream release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Constrain the dispatch input before it reaches $GITHUB_OUTPUT or any
+          # later command: an unvalidated value could carry a newline and forge
+          # additional step outputs.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$TAG' is not a valid release tag (expected vX.Y.Z[-suffix])"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          gh api "repos/$UPSTREAM_REPO/releases/tags/$TAG" > release.json
+
+          COMMIT="$(gh api "repos/$UPSTREAM_REPO/git/ref/tags/$TAG" --jq '.object.sha')"
+          PRERELEASE="$(jq -r '.prerelease' release.json)"
+
+          digests='{}'
+          for ARCH in aarch64 x64; do
+            NAME="QBZ_${VERSION}_${ARCH}.dmg"
+            ASSET="$(jq -c --arg n "$NAME" '.assets[] | select(.name == $n)' release.json)"
+            if [[ -z "$ASSET" ]]; then
+              echo "::error::upstream release $TAG is missing $NAME — refusing to publish a partial release"
+              exit 1
+            fi
+            ID="$(jq -r '.id' <<<"$ASSET")"
+            DIGEST="$(jq -r '.digest // ""' <<<"$ASSET")"
+            digests="$(jq -c --arg a "$ARCH" --arg id "$ID" --arg d "$DIGEST" \
+              '. + {($a): {id: $id, digest: $d}}' <<<"$digests")"
+          done
+
+          {
+            echo "version=$VERSION"
+            echo "commit=$COMMIT"
+            echo "prerelease=$PRERELEASE"
+            echo "digests=$digests"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Signing $TAG (commit $COMMIT, prerelease=$PRERELEASE)"
+          jq . <<<"$digests"
+
+  # Produces signed candidates only. Publishing happens in the fan-in job.
+  sign:
+    needs: resolve
+    environment: signing
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [aarch64, x64]
+    steps:
+      - name: Checkout (pipeline code only)
+        uses: actions/checkout@v5
+
+      - name: Download upstream dmg and verify digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          DIGESTS: ${{ needs.resolve.outputs.digests }}
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          NAME="QBZ_${VERSION}_${ARCH}.dmg"
+          gh release download "$TAG" --repo "$UPSTREAM_REPO" --pattern "$NAME" --dir src
+
+          EXPECTED="$(jq -r --arg a "$ARCH" '.[$a].digest' <<<"$DIGESTS")"
+          ACTUAL="sha256:$(shasum -a 256 "src/$NAME" | awk '{print $1}')"
+          if [[ -n "$EXPECTED" && "$EXPECTED" != "null" ]]; then
+            if [[ "$EXPECTED" != "$ACTUAL" ]]; then
+              echo "::error::digest mismatch for $NAME (frozen $EXPECTED, downloaded $ACTUAL)"
+              exit 1
+            fi
+            echo "digest verified: $ACTUAL"
+          else
+            echo "::warning::upstream API reported no digest for $NAME; recording $ACTUAL"
+          fi
+          echo "$ACTUAL  $NAME" > "src/$NAME.upstream-digest"
+
+      # Everything above this line runs without the certificate in the environment.
+      - name: Sign, notarize, staple
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          SIGNING_IDENTITY: ${{ vars.SIGNING_IDENTITY }}
+          EXPECTED_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          source scripts/keychain.sh
+          keychain_setup
+          export QBZ_KEYCHAIN
+          scripts/resign.sh "$VERSION" "$ARCH" \
+            "src/QBZ_${VERSION}_${ARCH}.dmg" "dist"
+
+      - name: Upload signed candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+            dist/notary-*.json
+            src/*.upstream-digest
+          if-no-files-found: error
+
+  # Single fan-in: both architectures verified present, then one atomic publish.
+  publish:
+    needs: [resolve, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      published: ${{ steps.publish.outcome == 'success' }}
+    steps:
+      - name: Download candidates
+        uses: actions/download-artifact@v5
+        with:
+          pattern: signed-*
+          merge-multiple: true
+          path: dist
+
+      - name: Verify both architectures and build provenance manifest
+        env:
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+        run: |
+          set -euo pipefail
+          for ARCH in aarch64 x64; do
+            F="dist/QBZ_${VERSION}_${ARCH}.dmg"
+            [[ -f "$F" ]] || { echo "::error::missing signed $F"; exit 1; }
+          done
+
+          {
+            echo "# Provenance"
+            echo
+            echo "Upstream: https://github.com/$UPSTREAM_REPO/releases/tag/$TAG"
+            echo "Upstream tag commit: \`$COMMIT\`"
+            echo
+            echo "These dmgs are upstream's builds, re-signed with our Developer ID"
+            echo "and notarized by Apple. They were not compiled here."
+            echo
+            echo "## Upstream source digests"
+            echo '```'
+            cat dist/*.upstream-digest 2>/dev/null || true
+            echo '```'
+            echo "## Published digests"
+            echo '```'
+            cat dist/*.dmg.sha256
+            echo '```'
+          } > dist/PROVENANCE.md
+          cat dist/PROVENANCE.md
+
+      - name: Publish release
+        id: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: QBZ ${{ needs.resolve.outputs.version }} (signed)
+          body_path: dist/PROVENANCE.md
+          prerelease: ${{ needs.resolve.outputs.prerelease }}
+          make_latest: ${{ needs.resolve.outputs.prerelease == 'false' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+
+  # Separate job so the tap token is never present alongside the certificate.
+  promote-tap:
+    needs: [resolve, publish]
+    if: inputs.promote_tap && needs.resolve.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Bump cask
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: scripts/bump-cask.sh "$VERSION"

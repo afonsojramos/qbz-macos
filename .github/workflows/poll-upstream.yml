@@ -1,0 +1,83 @@
+# Detects upstream releases that we have not signed yet and opens a tracking
+# issue. It deliberately does NOT start signing: resign-release.yml is dispatched
+# by a human, so someone approves each tag before our certificate vouches for it.
+#
+# Scheduled runs can be delayed, dropped, or disabled after repo inactivity, so
+# this is reconciliation, not a guarantee. It re-checks the whole recent window
+# every run rather than tracking a cursor.
+
+name: poll-upstream
+
+on:
+  schedule:
+    # Off-peak minute; on-the-hour schedules are the most likely to be delayed.
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: poll-upstream
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPO: vicrodh/qbz
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find unsigned upstream releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh api --paginate "repos/$UPSTREAM_REPO/releases?per_page=50" \
+            --jq '.[] | {tag: .tag_name, prerelease: .prerelease, assets: [.assets[].name]}' \
+            > upstream.jsonl
+
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+            --jq '.[].tag_name' > ours.txt || true
+
+          while read -r line; do
+            TAG="$(jq -r '.tag' <<<"$line")"
+
+            # Upstream controls this string. Constrain it before it reaches a
+            # search query or issue body.
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+              echo "skip '$TAG' (unexpected tag format)"
+              continue
+            fi
+
+            VERSION="${TAG#v}"
+
+            # Completeness gate: upstream's macOS matrix is continue-on-error, so
+            # a release can exist with only one architecture attached. Signing
+            # that would publish a release that is broken for half our users.
+            HAVE_ALL=1
+            for ARCH in aarch64 x64; do
+              jq -e --arg n "QBZ_${VERSION}_${ARCH}.dmg" \
+                '.assets | index($n)' <<<"$line" >/dev/null || HAVE_ALL=0
+            done
+            [[ "$HAVE_ALL" -eq 1 ]] || { echo "skip $TAG (incomplete upstream assets)"; continue; }
+
+            grep -qxF "$TAG" ours.txt && { echo "skip $TAG (already signed)"; continue; }
+
+            TITLE="Sign upstream release $TAG"
+            if gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                 --search "$TITLE in:title" --json title \
+                 --jq '.[].title' | grep -qxF "$TITLE"; then
+              echo "skip $TAG (issue already open)"
+              continue
+            fi
+
+            echo "queueing $TAG"
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body \
+          "Upstream published [\`$TAG\`](https://github.com/$UPSTREAM_REPO/releases/tag/$TAG) with both architectures attached.
+
+          Run \`resign-release\` with tag \`$TAG\` to sign, notarize and publish it.
+          The workflow pauses for approval in the \`signing\` environment before the certificate is used."
+          done < upstream.jsonl
