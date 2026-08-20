@@ -64,14 +64,18 @@ jobs:
             done
             [[ "$HAVE_ALL" -eq 1 ]] || { echo "skip $TAG (incomplete upstream assets)"; continue; }
 
-            grep -qxF "$TAG" ours.txt && { echo "skip $TAG (already signed)"; continue; }
+            # Only the newest complete release is actionable. On a newly created
+            # mirror, continuing through history would open an issue for every
+            # old release; once we reach the newest complete one, stop whether
+            # it is already signed, already tracked, or newly queued.
+            grep -qxF "$TAG" ours.txt && { echo "skip $TAG (already signed)"; break; }
 
             TITLE="Sign upstream release $TAG"
             if gh issue list --repo "$GITHUB_REPOSITORY" --state open \
                  --search "$TITLE in:title" --json title \
                  --jq '.[].title' | grep -qxF "$TITLE"; then
               echo "skip $TAG (issue already open)"
-              continue
+              break
             fi
 
             echo "queueing $TAG"
@@ -80,4 +84,5 @@ jobs:
 
           Run \`resign-release\` with tag \`$TAG\` to sign, notarize and publish it.
           The workflow pauses for approval in the \`signing\` environment before the certificate is used."
+            break
           done < upstream.jsonl
