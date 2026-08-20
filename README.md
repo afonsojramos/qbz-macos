@@ -64,7 +64,7 @@ Repository **variables**:
 | `SIGNING_IDENTITY` | `Developer ID Application: Your Name (TEAMID)` |
 | `APPLE_TEAM_ID` | `TEAMID` |
 
-Repository **secrets** (in the `signing` environment):
+Environment **secrets** (in the protected `signing` environment):
 
 | Name | What |
 | --- | --- |
@@ -73,7 +73,16 @@ Repository **secrets** (in the `signing` environment):
 | `NOTARY_KEY` | App Store Connect API .p8, base64 |
 | `NOTARY_KEY_ID` | key id for that .p8 |
 | `NOTARY_ISSUER_ID` | issuer id |
+
+Repository **secret**:
+
+| Name | What |
+| --- | --- |
 | `HOMEBREW_TAP_TOKEN` | fine-grained PAT, contents write on the tap only |
+
+The tap token is repository-scoped because `promote-tap` deliberately does not
+enter the `signing` environment. It is only passed to that job, while the Apple
+credentials are only passed to the protected signing job.
 
 Configure the `signing` environment with required reviewers and restrict it to the
 default branch. That approval gate is what keeps the certificate from signing an
