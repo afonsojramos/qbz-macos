@@ -20,17 +20,21 @@ brew install --cask afonsojramos/qbz/qbz
 
 Or download a dmg from [Releases](https://github.com/afonsojramos/qbz-macos/releases).
 
-## What these builds are, exactly
+## Trust and provenance
 
-- **Same bytes as upstream.** The application binary is the one upstream's CI
-  compiled for the matching tag. Nothing is recompiled here. Every release records
-  the upstream tag, its commit and the SHA-256 of both the upstream dmg and the
-  published dmg.
+- **No recompilation.** The application comes from the dmg that upstream's CI
+  published for the matching tag. Re-signing replaces its signature metadata and
+  bundle seal, and the dmg is rebuilt, so the signed artifacts are intentionally
+  not byte-for-byte identical to upstream's. Every release records the upstream
+  tag, its commit, and the SHA-256 of both the upstream dmg and the published dmg.
 - **Signed under a personal Apple Developer account,** not the qbz project's. macOS
   will name that account as the developer. These are not official qbz builds and are
   not endorsed by upstream.
-- **Not an audit.** Re-signing attests that these bytes came from upstream's published
-  release unmodified. It is not a review of what that code does.
+- **Not an audit or reproducible-build proof.** The workflow hashes the downloaded
+  upstream dmg, verifies it against GitHub's release-asset digest when one is
+  available, and does not recompile the app. Users still trust this repository's
+  workflow, runner and signing identity; the signature identifies who signed the
+  resulting artifact, not what its source code does.
 
 Prefer upstream's own dmgs if you would rather trust only the project's own release
 pipeline.
