@@ -177,7 +177,7 @@ jobs:
         with:
           pattern: signed-*
           merge-multiple: true
-          path: dist
+          path: artifacts
 
       - name: Verify both architectures and build provenance manifest
         env:
@@ -187,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           for ARCH in aarch64 x64; do
-            F="dist/QBZ_${VERSION}_${ARCH}.dmg"
+            F="artifacts/dist/QBZ_${VERSION}_${ARCH}.dmg"
             [[ -f "$F" ]] || { echo "::error::missing signed $F"; exit 1; }
           done
 
@@ -202,14 +202,14 @@ jobs:
             echo
             echo "## Upstream source digests"
             echo '```'
-            cat dist/*.upstream-digest 2>/dev/null || true
+            cat artifacts/src/*.upstream-digest
             echo '```'
             echo "## Published digests"
             echo '```'
-            cat dist/*.dmg.sha256
+            cat artifacts/dist/*.dmg.sha256
             echo '```'
-          } > dist/PROVENANCE.md
-          cat dist/PROVENANCE.md
+          } > artifacts/dist/PROVENANCE.md
+          cat artifacts/dist/PROVENANCE.md
 
       - name: Publish release
         id: publish
@@ -217,13 +217,13 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           name: QBZ ${{ needs.resolve.outputs.version }} (signed)
-          body_path: dist/PROVENANCE.md
+          body_path: artifacts/dist/PROVENANCE.md
           prerelease: ${{ needs.resolve.outputs.prerelease }}
           make_latest: ${{ needs.resolve.outputs.prerelease == 'false' }}
           fail_on_unmatched_files: true
           files: |
-            dist/*.dmg
-            dist/*.dmg.sha256
+            artifacts/dist/*.dmg
+            artifacts/dist/*.dmg.sha256
 
   # Separate job so the tap token is never present alongside the certificate.
   promote-tap:
