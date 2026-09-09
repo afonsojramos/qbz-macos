@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Re-sign one upstream QBZ dmg with a Developer ID identity, then notarize and
-# staple the dmg.
+# staple both the app and the dmg built from it.
 #
 #   scripts/resign.sh <version> <arch> <source-dmg> <out-dir>
 #
 # Order matters: sign nested code inside-out (plugins and frameworks before the
-# app that loads them), build the dmg from the signed app, sign the dmg, then
-# notarize the dmg once. A ticket on the outer dmg covers the nested app, so
-# the app is not submitted separately.
+# app that loads them), notarize and staple the app, build the dmg from it,
+# sign the dmg, then notarize and staple the dmg. Both get their own ticket:
+# Homebrew and drag-and-drop installs copy the app out of the dmg, and an app
+# without a stapled ticket needs a network round-trip to Apple on first
+# launch, which fails offline and is often blocked on managed Macs.
 #
 # Requires a keychain from keychain.sh plus SIGNING_IDENTITY, NOTARY_KEY_ID,
 # NOTARY_ISSUER_ID and NOTARY_KEY (base64 .p8). EXPECTED_TEAM_ID, when set,
@@ -219,6 +221,53 @@ while IFS= read -r f; do
   fi
 done <<<"$MACHOS"
 
+NOTARY_P8="${RUNNER_TEMP:-/tmp}/qbz-notary.p8"
+umask 077
+printf '%s' "$NOTARY_KEY" | base64 --decode > "$NOTARY_P8"
+
+# notarize <file> <log-name>: submit, wait, keep the log, fail unless Accepted.
+notarize() {
+  local file="$1" log="$OUT_DIR/notary-$2-${ARCH}.json"
+  local out rc id status
+
+  set +e
+  out="$(xcrun notarytool submit "$file" \
+    --key "$NOTARY_P8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+    --wait --timeout 30m --output-format json 2>&1)"
+  rc=$?
+  set -e
+  echo "$out"
+
+  id="$(jq -r '.id // empty' <<<"$out" 2>/dev/null || true)"
+  status="$(jq -r '.status // empty' <<<"$out" 2>/dev/null || true)"
+
+  # Apple recommends reading the log even on success; it reports warnings that
+  # become hard failures in later macOS releases.
+  if [[ -n "$id" ]]; then
+    echo "==> Notary log for $id"
+    xcrun notarytool log "$id" \
+      --key "$NOTARY_P8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+      "$log" || true
+    cat "$log" 2>/dev/null || true
+  fi
+
+  if [[ "$rc" -ne 0 || "$status" != "Accepted" ]]; then
+    echo "::error::notarization of $(basename "$file") did not succeed (status='${status:-unknown}', id='${id:-none}')" >&2
+    return 1
+  fi
+}
+
+echo "==> Notarizing app"
+# ditto's zip keeps symlinks and resource forks, which is what notarytool
+# expects for a bundle; the zip is a transport and is not published.
+ditto -c -k --keepParent "$APP" "$WORK/$APP_NAME.zip"
+notarize "$WORK/$APP_NAME.zip" app
+rm -f "$WORK/$APP_NAME.zip"
+
+echo "==> Stapling app"
+xcrun stapler staple "$APP"
+xcrun stapler validate "$APP"
+
 echo "==> Building dmg"
 # Symlink so a manual (non-Homebrew) install is a drag-and-drop.
 ln -s /Applications "$STAGE/Applications"
@@ -231,48 +280,23 @@ codesign --force --timestamp \
 codesign --verify --strict --verbose=2 "$OUT_DMG"
 
 echo "==> Notarizing dmg"
-NOTARY_P8="${RUNNER_TEMP:-/tmp}/qbz-notary.p8"
-umask 077
-printf '%s' "$NOTARY_KEY" | base64 --decode > "$NOTARY_P8"
+notarize "$OUT_DMG" dmg
 
-set +e
-SUBMIT_OUT="$(xcrun notarytool submit "$OUT_DMG" \
-  --key "$NOTARY_P8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
-  --wait --timeout 30m --output-format json 2>&1)"
-SUBMIT_RC=$?
-set -e
-echo "$SUBMIT_OUT"
-
-SUBMISSION_ID="$(jq -r '.id // empty' <<<"$SUBMIT_OUT" 2>/dev/null || true)"
-STATUS="$(jq -r '.status // empty' <<<"$SUBMIT_OUT" 2>/dev/null || true)"
-
-# Apple recommends reading the log even on success; it reports warnings that
-# become hard failures in later macOS releases.
-if [[ -n "$SUBMISSION_ID" ]]; then
-  echo "==> Notary log for $SUBMISSION_ID"
-  xcrun notarytool log "$SUBMISSION_ID" \
-    --key "$NOTARY_P8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
-    "$OUT_DIR/notary-${ARCH}.json" || true
-  cat "$OUT_DIR/notary-${ARCH}.json" 2>/dev/null || true
-fi
-
-if [[ "$SUBMIT_RC" -ne 0 || "$STATUS" != "Accepted" ]]; then
-  echo "::error::notarization did not succeed (status='${STATUS:-unknown}', id='${SUBMISSION_ID:-none}')" >&2
-  exit 1
-fi
-
-echo "==> Stapling"
+echo "==> Stapling dmg"
 xcrun stapler staple "$OUT_DMG"
 xcrun stapler validate "$OUT_DMG"
 
 echo "==> Gatekeeper assessment"
 # Assess the app as an executable and the dmg as an opened container; these are
 # different assessment types and using one for the other silently proves nothing.
+# syspolicy_check is the strictest of the three and not on every macOS, so it
+# reports rather than gates.
 if command -v syspolicy_check >/dev/null 2>&1; then
   syspolicy_check distribution "$APP" || true
 fi
 spctl -a -t exec -vvv "$APP"
 spctl -a -t open -vvv --context context:primary-signature "$OUT_DMG"
 
-shasum -a 256 "$OUT_DMG" | tee "$OUT_DMG.sha256"
+# Bare file name in the digest line: it is quoted verbatim in the release notes.
+(cd "$OUT_DIR" && shasum -a 256 "$(basename "$OUT_DMG")" | tee "$(basename "$OUT_DMG").sha256")
 echo "==> Done: $OUT_DMG"

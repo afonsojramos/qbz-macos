@@ -55,8 +55,10 @@ prompt. If a saved login is not picked up, sign in again once.
    certificate is used. GitHub notifies the environment's reviewers; approving the
    pending deployment on the run page is the only manual step.
 3. Per architecture: verify the upstream asset digest, sign every framework and
-   plugin inside the bundle, then the app, all with the hardened runtime; build
-   the dmg, sign it, notarize it once, staple it, then assess it with `spctl`.
+   plugin inside the bundle, then the app, all with the hardened runtime;
+   notarize and staple the app, build the dmg from it, sign it, notarize and
+   staple that too, then assess both with `spctl`. The app carries its own
+   ticket because installs copy it out of the dmg.
 4. Both architectures must succeed before anything is published. Partial releases
    are treated as failures, never as done. A tag that already has a release here
    is refused, so a published dmg is never silently replaced.
