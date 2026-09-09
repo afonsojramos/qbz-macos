@@ -72,7 +72,8 @@ prompt. If a saved login is not picked up, sign in again once.
    ticket because installs copy it out of the dmg.
 4. Both architectures must succeed before anything is published. Partial releases
    are treated as failures, never as done. A tag that already has a release here
-   is refused, so a published dmg is never silently replaced.
+   is refused unless the run is dispatched with `replace_existing`, so a
+   published dmg is never silently replaced.
 5. The Homebrew cask is bumped, and the tracking issue closed, only after the
    release is published.
 

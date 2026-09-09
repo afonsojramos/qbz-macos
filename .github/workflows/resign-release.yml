@@ -26,6 +26,11 @@ on:
         required: false
         default: true
         type: boolean
+      replace_existing:
+        description: "Re-sign a tag this repo already published, replacing its dmgs (the cask picks up the new digests)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -55,6 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing }}
+          PROMOTE_TAP: ${{ inputs.promote_tap }}
         run: |
           set -euo pipefail
           # Constrain the dispatch input before it reaches $GITHUB_OUTPUT or any
@@ -67,12 +74,19 @@ jobs:
 
           VERSION="${TAG#v}"
 
-          # Re-signing a published tag would replace dmgs whose digests the
-          # Homebrew cask already pins, breaking every `brew upgrade` until the
-          # cask is bumped again. Delete the release deliberately to redo it.
+          # Re-signing a published tag replaces dmgs whose digests the Homebrew
+          # cask pins, so it is only done on explicit request, and then only
+          # with promote_tap so the cask is refreshed in the same run.
           if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>&1; then
-            echo "::error::$GITHUB_REPOSITORY already has a release for $TAG; delete it first to re-sign"
-            exit 1
+            if [[ "$REPLACE_EXISTING" != "true" ]]; then
+              echo "::error::$GITHUB_REPOSITORY already has a release for $TAG; dispatch with replace_existing to re-sign it"
+              exit 1
+            fi
+            if [[ "$PROMOTE_TAP" != "true" ]]; then
+              echo "::error::replace_existing without promote_tap would leave the cask pinning digests that no longer exist"
+              exit 1
+            fi
+            echo "::warning::replacing the published assets of $TAG"
           fi
 
           gh api "repos/$UPSTREAM_REPO/releases/tags/$TAG" > release.json
