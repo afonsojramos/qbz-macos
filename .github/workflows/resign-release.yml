@@ -6,10 +6,13 @@
 #
 # Trust boundary: the `signing` environment is protected and requires manual
 # approval per run, so a human okays the exact upstream tag before our
-# certificate vouches for its bytes. Secrets exist only in the `sign` job; the
-# publish and tap jobs never see the certificate.
+# certificate vouches for its bytes. That holds whether a person dispatched the
+# run or poll-upstream did. Secrets exist only in the `sign` job; the publish
+# and tap jobs never see the certificate.
 
 name: resign-release
+# The tag in the title is how poll-upstream tells runs apart.
+run-name: resign-release ${{ inputs.tag }}
 
 on:
   workflow_dispatch:
@@ -19,9 +22,9 @@ on:
         required: true
         type: string
       promote_tap:
-        description: "Update the Homebrew cask after publishing"
+        description: "Update the Homebrew cask after publishing (stable releases only)"
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -63,6 +66,15 @@ jobs:
           fi
 
           VERSION="${TAG#v}"
+
+          # Re-signing a published tag would replace dmgs whose digests the
+          # Homebrew cask already pins, breaking every `brew upgrade` until the
+          # cask is bumped again. Delete the release deliberately to redo it.
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::$GITHUB_REPOSITORY already has a release for $TAG; delete it first to re-sign"
+            exit 1
+          fi
+
           gh api "repos/$UPSTREAM_REPO/releases/tags/$TAG" > release.json
 
           COMMIT="$(gh api "repos/$UPSTREAM_REPO/git/ref/tags/$TAG" --jq '.object.sha')"
@@ -171,6 +183,7 @@ jobs:
       contents: write
     outputs:
       published: ${{ steps.publish.outcome == 'success' }}
+      release_url: ${{ steps.publish.outputs.url }}
     steps:
       - name: Download candidates
         uses: actions/download-artifact@v5
@@ -224,6 +237,31 @@ jobs:
           files: |
             artifacts/dist/*.dmg
             artifacts/dist/*.dmg.sha256
+
+  # The tracking issue poll-upstream opened is the retry switch for this tag;
+  # closing it records that the tag is done. Separate job so a hiccup here can
+  # never block the tap promotion, and vice versa.
+  close-tracking-issue:
+    needs: [resolve, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_URL: ${{ needs.publish.outputs.release_url }}
+        run: |
+          set -euo pipefail
+          TITLE="Sign upstream release $TAG"
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search "$TITLE in:title" --json number,title \
+            | jq -r --arg t "$TITLE" '.[] | select(.title == $t) | .number' \
+            | while read -r n; do
+              gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
+                --comment "Published ${RELEASE_URL:-the signed release}."
+            done
 
   # Separate job so the tap token is never present alongside the certificate.
   promote-tap:

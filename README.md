@@ -48,16 +48,25 @@ prompt. If a saved login is not picked up, sign in again once.
 
 ## How a release is made
 
-1. `poll-upstream` notices a new upstream tag that has **both** architectures
-   attached and opens a tracking issue.
-2. A human dispatches `resign-release` for that tag. It pauses for approval in the
-   protected `signing` environment before any certificate is used.
-3. Per architecture: verify the upstream asset digest, sign the app with the
-   hardened runtime, build the dmg, sign the dmg, notarize it once, staple it, then
-   assess it with `spctl`.
+1. `poll-upstream` (every six hours) notices a new upstream tag that has **both**
+   architectures attached, opens a tracking issue and dispatches `resign-release`
+   for it.
+2. The run pauses for approval in the protected `signing` environment before any
+   certificate is used. GitHub notifies the environment's reviewers; approving the
+   pending deployment on the run page is the only manual step.
+3. Per architecture: verify the upstream asset digest, sign every framework and
+   plugin inside the bundle, then the app, all with the hardened runtime; build
+   the dmg, sign it, notarize it once, staple it, then assess it with `spctl`.
 4. Both architectures must succeed before anything is published. Partial releases
-   are treated as failures, never as done.
-5. The Homebrew cask is bumped only after the release is published.
+   are treated as failures, never as done. A tag that already has a release here
+   is refused, so a published dmg is never silently replaced.
+5. The Homebrew cask is bumped, and the tracking issue closed, only after the
+   release is published.
+
+The tracking issue is the per-tag switch. While it is open, a failed or rejected
+run is dispatched again by the next poll (and waits for approval again). Close
+the issue to stop retrying a tag; reopen it, or dispatch `resign-release` by
+hand, to pick it back up.
 
 ## Setup
 
@@ -90,4 +99,5 @@ credentials are only passed to the protected signing job.
 
 Configure the `signing` environment with required reviewers and restrict it to the
 default branch. That approval gate is what keeps the certificate from signing an
-upstream tag nobody looked at.
+upstream tag nobody looked at: `poll-upstream` can start a run, but only a
+reviewer can let it past the gate.

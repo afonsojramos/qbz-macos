@@ -1,6 +1,12 @@
-# Detects upstream releases that we have not signed yet and opens a tracking
-# issue. It deliberately does NOT start signing: resign-release.yml is dispatched
-# by a human, so someone approves each tag before our certificate vouches for it.
+# Detects the newest upstream release we have not signed yet, opens a tracking
+# issue and dispatches resign-release for it. Dispatching is not signing: that
+# workflow pauses in the protected `signing` environment until a reviewer
+# approves the run, so a human still okays each tag before the certificate
+# vouches for its bytes.
+#
+# Per tag, the tracking issue is the switch: while it is open and no run for
+# the tag is queued, waiting or in progress, a failed attempt is re-dispatched
+# on the next poll. Closing the issue stops that; publishing closes it.
 #
 # Scheduled runs can be delayed, dropped, or disabled after repo inactivity, so
 # this is reconciliation, not a guarantee. It re-checks the whole recent window
@@ -17,6 +23,9 @@ on:
 permissions:
   contents: read
   issues: write
+  # Dispatch resign-release. The token can start the workflow but never enters
+  # the signing environment; the approval gate stays with the reviewers.
+  actions: write
 
 concurrency:
   group: poll-upstream
@@ -24,12 +33,13 @@ concurrency:
 
 env:
   UPSTREAM_REPO: vicrodh/qbz
+  RELEASE_WORKFLOW: resign-release.yml
 
 jobs:
   poll:
     runs-on: ubuntu-latest
     steps:
-      - name: Find unsigned upstream releases
+      - name: Find and queue the newest unsigned upstream release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -42,11 +52,16 @@ jobs:
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
             --jq '.[].tag_name' > ours.txt || true
 
+          # Runs of the release workflow, newest first. run-name embeds the
+          # tag, so displayTitle identifies which tag a run is for.
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow "$RELEASE_WORKFLOW" \
+            --limit 100 --json displayTitle,status,url > runs.json
+
           while read -r line; do
             TAG="$(jq -r '.tag' <<<"$line")"
 
             # Upstream controls this string. Constrain it before it reaches a
-            # search query or issue body.
+            # search query, a run title or an issue body.
             if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
               echo "skip '$TAG' (unexpected tag format)"
               continue
@@ -65,24 +80,62 @@ jobs:
             [[ "$HAVE_ALL" -eq 1 ]] || { echo "skip $TAG (incomplete upstream assets)"; continue; }
 
             # Only the newest complete release is actionable. On a newly created
-            # mirror, continuing through history would open an issue for every
-            # old release; once we reach the newest complete one, stop whether
-            # it is already signed, already tracked, or newly queued.
+            # mirror, continuing through history would queue every old release;
+            # once we reach the newest complete one, stop whatever its state.
             grep -qxF "$TAG" ours.txt && { echo "skip $TAG (already signed)"; break; }
 
             TITLE="Sign upstream release $TAG"
-            if gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-                 --search "$TITLE in:title" --json title \
-                 --jq '.[].title' | grep -qxF "$TITLE"; then
-              echo "skip $TAG (issue already open)"
+            ISSUE_JSON="$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
+                --search "$TITLE in:title" --json number,state,title \
+              | jq -c --arg t "$TITLE" 'first(.[] | select(.title == $t)) // {}')"
+            ISSUE_STATE="$(jq -r '.state // ""' <<<"$ISSUE_JSON")"
+            ISSUE_NUMBER="$(jq -r '.number // ""' <<<"$ISSUE_JSON")"
+
+            # A closed issue that is not backed by a release means a human
+            # decided against this tag (rejected the deployment, or gave up on
+            # it). A scheduler must not overrule that.
+            if [[ "$ISSUE_STATE" == "CLOSED" ]]; then
+              echo "skip $TAG (issue #$ISSUE_NUMBER closed without a release; reopen it or dispatch manually)"
               break
             fi
 
-            echo "queueing $TAG"
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body \
+            ACTIVE_RUN="$(jq -r --arg t "resign-release $TAG" \
+              'first(.[] | select(.displayTitle == $t and .status != "completed") | .url) // ""' runs.json)"
+            if [[ -n "$ACTIVE_RUN" ]]; then
+              echo "skip $TAG (run already active: $ACTIVE_RUN)"
+              break
+            fi
+
+            if [[ -z "$ISSUE_NUMBER" ]]; then
+              echo "tracking $TAG"
+              ISSUE_URL="$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body \
           "Upstream published [\`$TAG\`](https://github.com/$UPSTREAM_REPO/releases/tag/$TAG) with both architectures attached.
 
-          Run \`resign-release\` with tag \`$TAG\` to sign, notarize and publish it.
-          The workflow pauses for approval in the \`signing\` environment before the certificate is used."
+          \`resign-release\` is dispatched automatically for it and pauses for approval in the \`signing\` environment before the certificate is used. Approve the pending deployment on the run to publish; reject it and close this issue to skip the tag.
+
+          While this issue is open, a failed attempt is dispatched again by the next \`poll-upstream\` run.")"
+              ISSUE_NUMBER="${ISSUE_URL##*/}"
+            else
+              echo "retrying $TAG (issue #$ISSUE_NUMBER open, last run not active)"
+            fi
+
+            echo "dispatching $RELEASE_WORKFLOW for $TAG"
+            gh workflow run "$RELEASE_WORKFLOW" --repo "$GITHUB_REPOSITORY" \
+              --ref "$GITHUB_REF_NAME" -f tag="$TAG" -f promote_tap=true
+
+            # Best effort: link the run from the issue so approval is one click
+            # away. The run id is not returned by the dispatch call.
+            RUN_URL=""
+            for _ in 1 2 3 4 5 6; do
+              sleep 5
+              RUN_URL="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$RELEASE_WORKFLOW" \
+                  --limit 20 --json displayTitle,status,url \
+                | jq -r --arg t "resign-release $TAG" \
+                  'first(.[] | select(.displayTitle == $t and .status != "completed") | .url) // ""')"
+              if [[ -n "$RUN_URL" ]]; then break; fi
+            done
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
+              "Dispatched ${RUN_URL:-\`resign-release\`}. It is waiting for approval in the \`signing\` environment." \
+              || echo "::warning::could not comment on issue #$ISSUE_NUMBER"
             break
           done < upstream.jsonl
