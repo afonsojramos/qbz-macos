@@ -36,11 +36,8 @@ if [[ -z "$CURRENT" ]]; then
 fi
 
 # Homebrew users can only move forward. A downgrade here would push everyone who
-# runs `brew upgrade` back onto an older build.
-if [[ "$CURRENT" == "$VERSION" ]]; then
-  echo "cask already at $VERSION, nothing to do"
-  exit 0
-fi
+# runs `brew upgrade` back onto an older build. The same version is allowed
+# through: a re-signed release carries new digests the cask must pick up.
 NEWEST="$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)"
 if [[ "$NEWEST" != "$VERSION" ]]; then
   echo "::error::refusing to downgrade cask from $CURRENT to $VERSION" >&2
@@ -76,7 +73,10 @@ sed -i.bak \
   "$CASK"
 rm -f "$CASK.bak"
 
-git diff --exit-code "$CASK" && { echo "::error::cask unchanged after bump" >&2; exit 1; }
+if git diff --exit-code "$CASK" >/dev/null; then
+  echo "cask already matches $VERSION, nothing to do"
+  exit 0
+fi
 
 git -c user.name="qbz-macos bot" -c user.email="noreply@github.com" \
   commit -am "chore: bump qbz to $VERSION"

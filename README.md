@@ -39,6 +39,17 @@ Or download a dmg from [Releases](https://github.com/afonsojramos/qbz-macos/rele
 Prefer upstream's own dmgs if you would rather trust only the project's own release
 pipeline.
 
+## Updating
+
+Update with `brew upgrade --cask qbz`, or download the next dmg from Releases.
+
+The app's own "what's new" check reads upstream's release list and links to
+upstream's release page, since these are upstream's binaries unchanged. That page
+offers the ad-hoc signed dmg. Installing it over a signed copy puts you back on
+an unsigned build that macOS will block again, so use the tap or this repo's
+Releases instead. A signed release normally follows an upstream one within a few
+hours of it being approved.
+
 ## Upgrading from an upstream (unsigned) install
 
 The signature changes from ad-hoc to a real Developer ID, which changes the app's
