@@ -77,7 +77,13 @@ jobs:
 
           gh api "repos/$UPSTREAM_REPO/releases/tags/$TAG" > release.json
 
-          COMMIT="$(gh api "repos/$UPSTREAM_REPO/git/ref/tags/$TAG" --jq '.object.sha')"
+          # An annotated tag points at a tag object, not the commit; record the
+          # commit either way so the provenance names what was actually built.
+          REF="$(gh api "repos/$UPSTREAM_REPO/git/ref/tags/$TAG")"
+          COMMIT="$(jq -r '.object.sha' <<<"$REF")"
+          if [[ "$(jq -r '.object.type' <<<"$REF")" == "tag" ]]; then
+            COMMIT="$(gh api "repos/$UPSTREAM_REPO/git/tags/$COMMIT" --jq '.object.sha')"
+          fi
           PRERELEASE="$(jq -r '.prerelease' release.json)"
 
           digests='{}'
@@ -172,6 +178,7 @@ jobs:
             dist/*.dmg
             dist/*.dmg.sha256
             dist/notary-*.json
+            dist/min-macos-*
             src/*.upstream-digest
           if-no-files-found: error
 
@@ -184,6 +191,7 @@ jobs:
     outputs:
       published: ${{ steps.publish.outcome == 'success' }}
       release_url: ${{ steps.publish.outputs.url }}
+      min_macos: ${{ steps.manifest.outputs.min_macos }}
     steps:
       - name: Download candidates
         uses: actions/download-artifact@v5
@@ -193,6 +201,7 @@ jobs:
           path: artifacts
 
       - name: Verify both architectures and build provenance manifest
+        id: manifest
         env:
           TAG: ${{ inputs.tag }}
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -204,11 +213,20 @@ jobs:
             [[ -f "$F" ]] || { echo "::error::missing signed $F"; exit 1; }
           done
 
+          # Both bundles declare their own minimum; the cask can only state one.
+          MIN_MACOS="$(cat artifacts/dist/min-macos-aarch64)"
+          if [[ "$MIN_MACOS" != "$(cat artifacts/dist/min-macos-x64)" ]]; then
+            echo "::error::architectures disagree on LSMinimumSystemVersion"
+            exit 1
+          fi
+          echo "min_macos=$MIN_MACOS" >> "$GITHUB_OUTPUT"
+
           {
             echo "# Provenance"
             echo
             echo "Upstream: https://github.com/$UPSTREAM_REPO/releases/tag/$TAG"
             echo "Upstream tag commit: \`$COMMIT\`"
+            echo "Minimum macOS: $MIN_MACOS"
             echo
             echo "These dmgs are upstream's builds, re-signed with our Developer ID"
             echo "and notarized by Apple. They were not compiled here."
@@ -277,4 +295,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.resolve.outputs.version }}
+          MIN_MACOS: ${{ needs.publish.outputs.min_macos }}
         run: scripts/bump-cask.sh "$VERSION"

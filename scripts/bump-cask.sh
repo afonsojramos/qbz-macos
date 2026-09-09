@@ -3,7 +3,8 @@
 #
 #   scripts/bump-cask.sh <version>
 #
-# Requires GH_TOKEN with write access to the tap repo only.
+# Requires GH_TOKEN with write access to the tap repo only. MIN_MACOS, when
+# set to the app's LSMinimumSystemVersion, also updates `depends_on macos:`.
 
 set -euo pipefail
 
@@ -46,10 +47,32 @@ if [[ "$NEWEST" != "$VERSION" ]]; then
   exit 1
 fi
 
+# Homebrew names macOS releases by symbol; map the numeric minimum the app
+# declares. Unknown versions fail rather than guess, so a future macOS shows up
+# as a workflow error instead of a cask that quietly claims the wrong floor.
+macos_symbol() {
+  case "$1" in
+    10.15|10.15.*) echo catalina ;;
+    11|11.*)       echo big_sur ;;
+    12|12.*)       echo monterey ;;
+    13|13.*)       echo ventura ;;
+    14|14.*)       echo sonoma ;;
+    15|15.*)       echo sequoia ;;
+    26|26.*)       echo tahoe ;;
+    *) echo "::error::no Homebrew symbol known for macOS $1; extend macos_symbol in bump-cask.sh" >&2; return 1 ;;
+  esac
+}
+macos_edit=()
+if [[ -n "${MIN_MACOS:-}" ]]; then
+  SYMBOL="$(macos_symbol "$MIN_MACOS")"
+  macos_edit=(-e "s/^  depends_on macos: :.*$/  depends_on macos: :$SYMBOL/")
+fi
+
 sed -i.bak \
   -e "s/^  version \".*\"$/  version \"$VERSION\"/" \
   -e "s/^  sha256 arm:   \".*\",$/  sha256 arm:   \"$ARM_SHA\",/" \
   -e "s/^         intel: \".*\"$/         intel: \"$INTEL_SHA\"/" \
+  "${macos_edit[@]+"${macos_edit[@]}"}" \
   "$CASK"
 rm -f "$CASK.bak"
 

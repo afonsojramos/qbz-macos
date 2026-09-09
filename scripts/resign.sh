@@ -57,6 +57,15 @@ got_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/
   echo "::error::bundle id $got_id != $BUNDLE_ID" >&2; exit 1;
 }
 
+# Recorded so the cask's `depends_on macos:` follows what the app declares
+# rather than whatever it was when the cask was written.
+MIN_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$MIN_MACOS" =~ ^[0-9]+(\.[0-9]+)*$ ]] || {
+  echo "::error::LSMinimumSystemVersion is '$MIN_MACOS', expected a version" >&2; exit 1;
+}
+echo "$MIN_MACOS" > "$OUT_DIR/min-macos-${ARCH}"
+echo "minimum macOS: $MIN_MACOS"
+
 # Paths are fed through line-oriented tools below; a newline in one would let
 # a crafted bundle smuggle an extra path past the checks.
 if [[ -n "$(find "$APP" -name "$(printf '*\n*')")" ]]; then
