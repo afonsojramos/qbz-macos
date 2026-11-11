@@ -46,8 +46,8 @@ The app's own "what's new" check reads upstream's release list and links to
 upstream's release page, since these are upstream's binaries unchanged. That page
 offers the ad-hoc signed dmg. Installing it over a signed copy puts you back on
 an unsigned build that macOS will block again, so use the tap or this repo's
-Releases instead. A signed release normally follows an upstream one within a few
-hours of it being approved.
+Releases instead. A signed release normally follows an upstream one within six
+hours.
 
 ## Upgrading from an upstream (unsigned) install
 
@@ -61,9 +61,8 @@ prompt. If a saved login is not picked up, sign in again once.
 1. `poll-upstream` (every six hours) notices a new upstream tag that has **both**
    architectures attached, opens a tracking issue and dispatches `resign-release`
    for it.
-2. The run pauses for approval in the protected `signing` environment before any
-   certificate is used. GitHub notifies the environment's reviewers; approving the
-   pending deployment on the run page is the only manual step.
+2. The signing job runs in the `signing` environment, which only `main` can
+   deploy to. There is no manual approval step.
 3. Per architecture: verify the upstream asset digest, sign every framework and
    plugin inside the bundle, then the app, all with the hardened runtime;
    notarize and staple the app, build the dmg from it, sign it, notarize and
@@ -77,7 +76,7 @@ prompt. If a saved login is not picked up, sign in again once.
    release is published.
 
 The tracking issue is the per-tag switch. While it is open, a failed or rejected
-run is dispatched again by the next poll (and waits for approval again). Close
+run is dispatched again by the next poll. Close
 the issue to stop retrying a tag; reopen it, or dispatch `resign-release` by
 hand, to pick it back up.
 
@@ -90,7 +89,7 @@ Repository **variables**:
 | `SIGNING_IDENTITY` | `Developer ID Application: Your Name (TEAMID)` |
 | `APPLE_TEAM_ID` | `TEAMID` |
 
-Environment **secrets** (in the protected `signing` environment):
+Environment **secrets** (in the `signing` environment):
 
 | Name | What |
 | --- | --- |
@@ -108,9 +107,9 @@ Repository **secret**:
 
 The tap token is repository-scoped because `promote-tap` deliberately does not
 enter the `signing` environment. It is only passed to that job, while the Apple
-credentials are only passed to the protected signing job.
+credentials are only passed to the signing job.
 
-Configure the `signing` environment with required reviewers and restrict it to the
-default branch. That approval gate is what keeps the certificate from signing an
-upstream tag nobody looked at: `poll-upstream` can start a run, but only a
-reviewer can let it past the gate.
+Restrict the `signing` environment to the default branch. It has no required
+reviewers: upstream release tags are cut by the same maintainer who owns this
+repository, so the certificate signs every complete upstream release. Add
+required reviewers to the environment to bring back a per-tag approval gate.

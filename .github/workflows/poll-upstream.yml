@@ -1,8 +1,6 @@
 # Detects the newest upstream release we have not signed yet, opens a tracking
-# issue and dispatches resign-release for it. Dispatching is not signing: that
-# workflow pauses in the protected `signing` environment until a reviewer
-# approves the run, so a human still okays each tag before the certificate
-# vouches for its bytes.
+# issue and dispatches resign-release for it, which signs and publishes it
+# without a manual approval step.
 #
 # Per tag, the tracking issue is the switch: while it is open and no run for
 # the tag is queued, waiting or in progress, a failed attempt is re-dispatched
@@ -24,7 +22,7 @@ permissions:
   contents: read
   issues: write
   # Dispatch resign-release. The token can start the workflow but never enters
-  # the signing environment; the approval gate stays with the reviewers.
+  # the signing environment.
   actions: write
 
 concurrency:
@@ -111,7 +109,7 @@ jobs:
               ISSUE_URL="$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body \
           "Upstream published [\`$TAG\`](https://github.com/$UPSTREAM_REPO/releases/tag/$TAG) with both architectures attached.
 
-          \`resign-release\` is dispatched automatically for it and pauses for approval in the \`signing\` environment before the certificate is used. Approve the pending deployment on the run to publish; reject it and close this issue to skip the tag.
+          \`resign-release\` is dispatched automatically to sign and publish it. Close this issue to stop retrying the tag.
 
           While this issue is open, a failed attempt is dispatched again by the next \`poll-upstream\` run.")"
               ISSUE_NUMBER="${ISSUE_URL##*/}"
@@ -123,8 +121,8 @@ jobs:
             gh workflow run "$RELEASE_WORKFLOW" --repo "$GITHUB_REPOSITORY" \
               --ref "$GITHUB_REF_NAME" -f tag="$TAG" -f promote_tap=true
 
-            # Best effort: link the run from the issue so approval is one click
-            # away. The run id is not returned by the dispatch call.
+            # Best effort: link the run from the issue. The run id is not
+            # returned by the dispatch call.
             RUN_URL=""
             for _ in 1 2 3 4 5 6; do
               sleep 5
@@ -135,7 +133,7 @@ jobs:
               if [[ -n "$RUN_URL" ]]; then break; fi
             done
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
-              "Dispatched ${RUN_URL:-\`resign-release\`}. It is waiting for approval in the \`signing\` environment." \
+              "Dispatched ${RUN_URL:-\`resign-release\`}." \
               || echo "::warning::could not comment on issue #$ISSUE_NUMBER"
             break
           done < upstream.jsonl
