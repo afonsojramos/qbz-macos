@@ -1,6 +1,6 @@
 # qbz-macos
 
-Signed and notarized macOS builds of [qbz](https://github.com/vicrodh/qbz).
+Signed and notarized macOS builds of [qbz](https://github.com/afonsojramos/qbz).
 
 ## Why
 
@@ -27,9 +27,8 @@ Or download a dmg from [Releases](https://github.com/afonsojramos/qbz-macos/rele
   bundle seal, and the dmg is rebuilt, so the signed artifacts are intentionally
   not byte-for-byte identical to upstream's. Every release records the upstream
   tag, its commit, and the SHA-256 of both the upstream dmg and the published dmg.
-- **Signed under a personal Apple Developer account,** not the qbz project's. macOS
-  will name that account as the developer. These are not official qbz builds and are
-  not endorsed by upstream.
+- **Signed under a personal Apple Developer account.** macOS will name that account
+  as the developer.
 - **Not an audit or reproducible-build proof.** The workflow hashes the downloaded
   upstream dmg, verifies it against GitHub's release-asset digest when one is
   available, and does not recompile the app. Users still trust this repository's

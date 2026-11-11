@@ -32,7 +32,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UPSTREAM_REPO: vicrodh/qbz
+  UPSTREAM_REPO: afonsojramos/qbz
   RELEASE_WORKFLOW: resign-release.yml
 
 jobs:

@@ -1,6 +1,6 @@
 # Sign, notarize and publish macOS builds of qbz.
 #
-# Consumes the dmgs vicrodh/qbz already publishes (they ship ad-hoc signed, which
+# Consumes the dmgs afonsojramos/qbz already publishes (they ship ad-hoc signed, which
 # Gatekeeper rejects and MDM-managed Macs often block outright), replaces the
 # signature with our Developer ID, notarizes and staples.
 #
@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  UPSTREAM_REPO: vicrodh/qbz
+  UPSTREAM_REPO: afonsojramos/qbz
 
 jobs:
   # Freezes exactly what will be signed. Refuses to start unless BOTH
