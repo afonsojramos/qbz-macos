@@ -4,11 +4,10 @@
 # Gatekeeper rejects and MDM-managed Macs often block outright), replaces the
 # signature with our Developer ID, notarizes and staples.
 #
-# Trust boundary: the `signing` environment is protected and requires manual
-# approval per run, so a human okays the exact upstream tag before our
-# certificate vouches for its bytes. That holds whether a person dispatched the
-# run or poll-upstream did. Secrets exist only in the `sign` job; the publish
-# and tap jobs never see the certificate.
+# Trust boundary: the `signing` environment only accepts runs from main and
+# has no required reviewers, because the upstream release tags come from the
+# same maintainer. Secrets exist only in the `sign` job; the publish and tap
+# jobs never see the certificate.
 
 name: resign-release
 # The tag in the title is how poll-upstream tells runs apart.
